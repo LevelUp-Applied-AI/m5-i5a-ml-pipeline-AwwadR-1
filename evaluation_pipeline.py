@@ -14,6 +14,8 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder, PolynomialFeatu
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+from custom_cv import compare_custom_vs_sklearn, summarize_custom_cv
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -399,6 +401,18 @@ if __name__ == "__main__":
                 # Tier 2: compare baseline pipelines vs feature-engineered pipelines
                 baseline_results, fe_results = compare_feature_engineering(X_train, y_train)
                 fe_comparison = summarize_feature_engineering_impact(baseline_results, fe_results)
+                
+                
+                # Tier 3: custom stratified cross-validation from separate file
+                tier3_model = define_models(use_feature_engineering=False)["RidgeClassifier"]
+                custom_scores, sklearn_scores = compare_custom_vs_sklearn(
+                    X_train,
+                    y_train,
+                    tier3_model,
+                    k=5,
+                    random_state=42
+                )
+                summarize_custom_cv(custom_scores)
 
 """
 Recommendation:
