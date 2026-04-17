@@ -10,7 +10,7 @@ import numpy as np
 from sklearn.model_selection import cross_validate, cross_val_predict, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, PolynomialFeatures
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
@@ -58,45 +58,80 @@ def build_preprocessor():
 
     return preprocessor
 
+def build_pipeline(model, numeric_features, categorical_features, use_feature_engineering=False):
+    """Build a preprocessing + model pipeline.
 
-def define_models():
-    """Define the 5 model configurations to compare.
-
-    Two dummy baselines are included to teach two different lessons:
-    most_frequent demonstrates the accuracy inflation problem on imbalanced
-    data; stratified shows what random guessing in proportion to class
-    frequencies looks like, so F1 carries meaningful signal when comparing.
+    Args:
+        model: sklearn model object
+        numeric_features: list of numeric feature names
+        categorical_features: list of categorical feature names
+        use_feature_engineering: whether to add PolynomialFeatures to numeric columns
 
     Returns:
-        Dictionary mapping model name to (preprocessor, model) Pipeline.
+        sklearn Pipeline
     """
-    preprocessor = build_preprocessor()
-
-    models = {
-        "LogReg_default": Pipeline([
-            ("preprocessor", preprocessor),
-            ("model", LogisticRegression(C=1.0, random_state=42, max_iter=1000, class_weight="balanced"))
-        ]),
-
-        "LogReg_L1": Pipeline([
-            ("preprocessor", preprocessor),
-            ("model", LogisticRegression(C=0.1, penalty="l1", solver="saga", random_state=42, max_iter=1000, class_weight="balanced"))
-        ]),
-        
-        "RidgeClassifier": Pipeline([
-            ("preprocessor", preprocessor),
-            ("model", RidgeClassifier(alpha=1.0, class_weight="balanced", random_state=42))
-        ]),
-
-        "Dummy_most_frequent": Pipeline([
-            ("preprocessor", preprocessor),
-            ("model", DummyClassifier(strategy="most_frequent"))
-        ]),
-
-        "Dummy_stratified": Pipeline([
-            ("preprocessor", preprocessor),
-            ("model", DummyClassifier(strategy="stratified", random_state=42))
+    if use_feature_engineering:
+        numeric_transformer = Pipeline([
+            ("scalar", StandardScaler()),
+            ("poly", PolynomialFeatures(degree=2, interaction_only=True, include_bias=False))
         ])
+    else:
+        numeric_transformer = Pipeline([
+            ("scalar", StandardScaler())
+        ])
+
+    preprocessor = ColumnTransformer(transformers=[
+        ("num", numeric_transformer, numeric_features),
+        ("cat", OneHotEncoder(drop="first", handle_unknown="ignore"), categorical_features)
+    ])
+
+    pipeline = Pipeline([
+        ("preprocessor", preprocessor),
+        ("model", model)
+    ])
+
+    return pipeline
+
+def define_models(use_feature_engineering=False):
+    """Define the 5 model configurations to compare.
+
+    Args:
+        use_feature_engineering: whether to apply polynomial interaction features
+
+    Returns:
+        Dictionary mapping model name to Pipeline.
+    """
+    models = {
+        "LogReg_default": build_pipeline(
+            LogisticRegression(C=1.0, random_state=42, max_iter=1000, class_weight="balanced"),
+            NUMERIC_FEATURES,
+            CATEGORICAL_FEATURES,
+            use_feature_engineering=use_feature_engineering
+        ),
+        "LogReg_L1": build_pipeline(
+            LogisticRegression(C=0.1, penalty="l1", solver="saga", random_state=42, max_iter=1000, class_weight="balanced"),
+            NUMERIC_FEATURES,
+            CATEGORICAL_FEATURES,
+            use_feature_engineering=use_feature_engineering
+        ),
+        "RidgeClassifier": build_pipeline(
+            RidgeClassifier(alpha=1.0, class_weight="balanced", random_state=42),
+            NUMERIC_FEATURES,
+            CATEGORICAL_FEATURES,
+            use_feature_engineering=use_feature_engineering
+        ),
+        "Dummy_most_frequent": build_pipeline(
+            DummyClassifier(strategy="most_frequent"),
+            NUMERIC_FEATURES,
+            CATEGORICAL_FEATURES,
+            use_feature_engineering=use_feature_engineering
+        ),
+        "Dummy_stratified": build_pipeline(
+            DummyClassifier(strategy="stratified", random_state=42),
+            NUMERIC_FEATURES,
+            CATEGORICAL_FEATURES,
+            use_feature_engineering=use_feature_engineering
+        )
     }
 
     return models
@@ -133,6 +168,32 @@ def evaluate_models(models, X, y, cv=5, random_state=42):
     results_df = pd.DataFrame(results)
     return results_df.sort_values(by="f1_mean", ascending=False).reset_index(drop=True)
 
+def compare_feature_engineering(X_train, y_train):
+    """Run model comparison with and without feature engineering"""
+    print("\n=== Tier 2: Baseline Models (No Feature Engineering) ===")
+    baseline_models = define_models(use_feature_engineering=False)
+    baseline_results = evaluate_models(baseline_models, X_train, y_train)
+    print(baseline_results.to_string(index=False))
+
+    print("\n=== Tier 2: Models With Feature Engineering ===")
+    fe_models = define_models(use_feature_engineering=True)
+    fe_results = evaluate_models(fe_models, X_train, y_train)
+    print(fe_results.to_string(index=False))
+
+    return baseline_results, fe_results
+
+def summarize_feature_engineering_impact(baseline_results, fe_results):
+    """Compare F1 before and after feature engineering."""
+    baseline_f1 = baseline_results[["model", "f1_mean"]].rename(columns={"f1_mean": "baseline_f1"})
+    fe_f1 = fe_results[["model", "f1_mean"]].rename(columns={"f1_mean": "fe_f1"})
+
+    comparison = baseline_f1.merge(fe_f1, on="model")
+    comparison["f1_change"] = comparison["fe_f1"] - comparison["baseline_f1"]
+
+    print("\n=== Tier 2: Feature Engineering Impact on F1 ===")
+    print(comparison.to_string(index=False))
+
+    return comparison
 
 def final_evaluation(pipeline, X_train, X_test, y_train, y_test):
     """Train a pipeline on full training data and evaluate on the held-out test set.
@@ -335,9 +396,14 @@ if __name__ == "__main__":
 
                 compare_logreg_recalls(reports)
 
+                # Tier 2: compare baseline pipelines vs feature-engineered pipelines
+                baseline_results, fe_results = compare_feature_engineering(X_train, y_train)
+                fe_comparison = summarize_feature_engineering_impact(baseline_results, fe_results)
 
 """
 Recommendation:
+
+Main assignment:
 I recommend RidgeClassifier for this task,
 because it achieved the highest F1 score among the real models in cross-validation (0.341)
 and also gave a slightly stronger balance between precision and recall. Accuracy alone is not enough here,
@@ -350,4 +416,26 @@ It also clearly outperformed the Dummy_stratified baseline on F1 (0.341 vs 0.173
 which shows it learned useful patterns beyond random guessing.
 Since the final test F1 (0.381) was a bit higher than the CV F1 (0.341), 
 the recommendation is supported and the model appears to generalize reasonably well to unseen data.
+
+Tier 1:
+Tier 1 didn't change my recommendation. After checking the per-class metrics,
+RidgeClassifier still performed best on the minority class because it achieved the highest class-1 F1 score (0.341326). 
+When I compared LogReg_default with LogReg_L1, I found that the L1 version improved recall for churned customers (0.625641 vs 0.600000) 
+but reduced recall slightly for non-churned customers (0.601990 vs 0.613930). 
+This suggests that L1 regularization made the model more sensitive to churners, 
+but overall RidgeClassifier still gave the best minority-class performance.
+
+Tier 2:
+Tier 2 changed the recommendation slightly. 
+After adding interaction-only polynomial features for the numeric columns,
+LogReg_L1 became the best real model with an F1 score of 0.345290, 
+compared to 0.340095 before feature engineering. 
+This means the engineered features helped the L1-regularized logistic regression learn slightly better patterns from the data.
+LogReg_default also improved a little, but RidgeClassifier became worse, with its F1 dropping from 0.341076 to 0.329983. 
+This suggests that feature engineering was useful for the logistic regression models, 
+but it didn't help every model equally. 
+In terms of the bias-variance tradeoff, the added interaction features made the models more flexible, 
+which improved performance for LogReg_L1, but may have introduced unnecessary complexity for RidgeClassifier.
+
 """
+
