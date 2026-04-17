@@ -7,13 +7,13 @@ configurations using cross-validation with ColumnTransformer + Pipeline.
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import cross_validate, StratifiedKFold, train_test_split
+from sklearn.model_selection import cross_validate, cross_val_predict, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.dummy import DummyClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -175,6 +175,106 @@ def recommend_model(results_df):
     print("Write your recommendation in the PR description.")
 
 
+def per_class_analysis(models, X_train, y_train, cv=5, random_state=42):
+    """Run out-of-fold predictions and build a classification report for each model.
+
+    Args:
+        models: Dictionary of {name: Pipeline}.
+        X_train: Training feature DataFrame.
+        y_train: Training target Series.
+        cv: Number of folds.
+        random_state: Random seed.
+
+    Returns:
+        Dictionary of {model_name: classification_report_dict}.
+    """
+    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+    reports = {}
+
+    for name, pipeline in models.items():
+        y_pred_oof = cross_val_predict(
+            pipeline,
+            X_train,
+            y_train,
+            cv=skf
+        )
+
+        report = classification_report(
+            y_train,
+            y_pred_oof,
+            output_dict=True,
+            zero_division=0
+        )
+
+        reports[name] = report
+
+    return reports
+
+
+def tier1_summary_table(reports):
+    """Convert per-class reports into a comparison table."""
+    rows = []
+
+    for model_name, report in reports.items():
+        rows.append({
+            "model": model_name,
+            "class_0_precision": report["0"]["precision"],
+            "class_0_recall": report["0"]["recall"],
+            "class_0_f1": report["0"]["f1-score"],
+            "class_1_precision": report["1"]["precision"],
+            "class_1_recall": report["1"]["recall"],
+            "class_1_f1": report["1"]["f1-score"]
+        })
+
+    return pd.DataFrame(rows).sort_values(by="class_1_f1", ascending=False).reset_index(drop=True)
+
+
+def print_tier1_reports(reports):
+    """Print the per-class metrics in a readable way."""
+    print("\n=== Tier 1: Per-Class Analysis ===")
+
+    for model_name, report in reports.items():
+        print(f"\n--- {model_name} ---")
+        print(
+            f"Class 0 (not churned) -> "
+            f"Precision: {report['0']['precision']:.3f}, "
+            f"Recall: {report['0']['recall']:.3f}, "
+            f"F1: {report['0']['f1-score']:.3f}"
+        )
+        print(
+            f"Class 1 (churned)     -> "
+            f"Precision: {report['1']['precision']:.3f}, "
+            f"Recall: {report['1']['recall']:.3f}, "
+            f"F1: {report['1']['f1-score']:.3f}"
+        )
+
+
+def best_minority_class_model(reports):
+    """Find the best model for the minority class using class-1 F1."""
+    best_model = None
+    best_class_1_f1 = -1
+
+    for model_name, report in reports.items():
+        class_1_f1 = report["1"]["f1-score"]
+
+        if class_1_f1 > best_class_1_f1:
+            best_class_1_f1 = class_1_f1
+            best_model = model_name
+
+    return best_model, best_class_1_f1
+
+
+def compare_logreg_recalls(reports):
+    """Compare per-class recall for LogReg_default vs LogReg_L1."""
+    default_report = reports["LogReg_default"]
+    l1_report = reports["LogReg_L1"]
+
+    print("\n=== Recall Comparison: LogReg_default vs LogReg_L1 ===")
+    print(f"Class 0 recall - LogReg_default: {default_report['0']['recall']:.3f}")
+    print(f"Class 0 recall - LogReg_L1:      {l1_report['0']['recall']:.3f}")
+    print(f"Class 1 recall - LogReg_default: {default_report['1']['recall']:.3f}")
+    print(f"Class 1 recall - LogReg_L1:      {l1_report['1']['recall']:.3f}")
+
 if __name__ == "__main__":
     data = load_and_prepare()
     if data is not None:
@@ -217,6 +317,23 @@ if __name__ == "__main__":
                 print(f"CV Accuracy Mean: {best_cv_row['accuracy_mean']:.3f}")
                 print(f"Test F1: {test_metrics['f1']:.3f}")
                 print(f"Test Accuracy: {test_metrics['accuracy']:.3f}")
+
+                # Tier 1: Per-class analysis using out-of-fold predictions
+                reports = per_class_analysis(models, X_train, y_train)
+
+                print_tier1_reports(reports)
+
+                tier1_df = tier1_summary_table(reports)
+                print("\n=== Tier 1 Summary Table ===")
+                print(tier1_df.to_string(index=False))
+
+                best_class1_model, best_class1_f1 = best_minority_class_model(reports)
+                print(
+                    f"\nBest model for minority class (class 1 / churned) "
+                    f"based on class-1 F1: {best_class1_model} ({best_class1_f1:.3f})"
+                )
+
+                compare_logreg_recalls(reports)
 
 
 """
